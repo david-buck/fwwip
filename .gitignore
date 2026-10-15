@@ -1,0 +1,21 @@
+.build/
+.DS_Store
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+*.xcarchive
+*.dSYM/
+*.app/
+*.log
+.swiftpm/
+.env
+.env.*
+*.p12
+*.p8
+*.mobileprovision
+*.provisionprofile
+# Private local development records and publication staging.
+Evidence/
+Skills/
+.publication/
