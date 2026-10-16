@@ -15,6 +15,14 @@ struct FWWIPApp: App {
             .padding(24)
         }
         .commands {
+            CommandGroup(replacing: .undoRedo) {
+                Button("Undo Move Card") { appDelegate.undoMove() }
+                    .keyboardShortcut("z", modifiers: .command)
+                    .disabled(!appDelegate.canUndoMove)
+                Button("Redo Move Card") { appDelegate.redoMove() }
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
+                    .disabled(!appDelegate.canRedoMove)
+            }
             CommandGroup(after: .windowArrangement) {
                 Toggle("Always on Top", isOn: Binding(
                     get: { appDelegate.staysOnTop },
@@ -27,6 +35,8 @@ struct FWWIPApp: App {
 
 @MainActor
 final class WorkPanel: NSPanel {
+    var cardUndoManager: UndoManager?
+    override var undoManager: UndoManager? { cardUndoManager ?? super.undoManager }
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 }
@@ -37,6 +47,10 @@ final class PanelAppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate
     @ObservationIgnored private var panel: WorkPanel?
     @ObservationIgnored private var statusItem: NSStatusItem?
     @ObservationIgnored private let model = PanelModel()
+    var canUndoMove: Bool { model.canUndoMove }
+    var canRedoMove: Bool { model.canRedoMove }
+    func undoMove() { model.undoMove() }
+    func redoMove() { model.redoMove() }
     var staysOnTop = true {
         didSet { panel?.level = staysOnTop ? .floating : .normal }
     }
@@ -56,6 +70,7 @@ final class PanelAppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.minSize = NSSize(width: 400, height: 450)
         panel.maxSize = NSSize(width: 560, height: 1200)
+        panel.cardUndoManager = model.moveHistory.manager
         panel.contentView = NSHostingView(rootView: ContentView(model: model))
         let toolbar = NSToolbar(identifier: "FWWIPPanelToolbar")
         toolbar.delegate = self

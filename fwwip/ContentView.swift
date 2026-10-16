@@ -62,7 +62,7 @@ private struct WorkspaceHeader: View {
                 if let fetchedAt = model.lastFetchedAt {
                     Text("Fetched \(fetchedAt, format: .dateTime.hour().minute())")
                         .foregroundStyle(.secondary)
-                } else if model.isBusy {
+                } else if model.isBusy || model.isLoadingWork {
                     Text("Loading work…").foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -76,10 +76,9 @@ private struct WorkspaceHeader: View {
                 Button("Details", action: showConnection).buttonStyle(.link)
             }
             .font(.caption)
-            if let message = model.moveMessage {
-                Text(message).font(.caption).foregroundStyle(.secondary)
+            if let failure = model.backgroundFailureMessage {
+                Text(failure).font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityAddTraits(.updatesFrequently)
             }
             if let error = model.errorMessage {
                 Text(error).font(.callout).foregroundStyle(.secondary)
@@ -135,7 +134,7 @@ private struct WorkList: View {
                 }
                 if model.items.isEmpty && !model.isBusy {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text(model.snapshot == nil ? "No work loaded."
+                        Text(model.isLoadingWork ? "Loading work…" : model.snapshot == nil ? "No work loaded."
                              : model.filter == .needsYou ? "No confirmed requests for you in this column."
                              : "No cards in this column.")
                             .font(.callout).foregroundStyle(.secondary)
@@ -147,7 +146,7 @@ private struct WorkList: View {
                     Button("Show more (\(model.remainingCount) remaining)") { model.loadMore() }
                         .disabled(model.isBusy).padding(.vertical, 8)
                 }
-                if model.isBusy { ProgressView().controlSize(.small).padding(8) }
+                if model.isBusy || model.isLoadingWork { ProgressView().controlSize(.small).padding(8) }
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 16)

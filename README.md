@@ -10,7 +10,7 @@ This is a personal, early-stage app built with SwiftUI and AppKit. It is not an 
 - Lets you choose a workspace and collection, then browse one board column at a time. Use the arrows or **⌥⌘← / ⌥⌘→** to cycle columns.
 - Shows task links, explicitly authored progress updates with timestamps, verified evidence and conversation links when available.
 - Filters confirmed requests with **Needs you**. Missing action metadata remains unknown.
-- Provides a native **Move to** menu with version checks, conflict reporting, canonical read-back and board refresh.
+- Provides optimistic **Move to**, native Undo/Redo, version checks, conflict reporting and canonical read-back.
 
 Closing the panel keeps FWWIP running. Use the menu-bar menu to show it again or quit. Workspace, collection and column choices are saved locally.
 
@@ -46,7 +46,7 @@ For each collection, FWWIP chooses **Active work** when present, otherwise **Wor
 
 Matching memo pages are read into memory to establish columns and counts. The panel displays 50 filtered cards at a time, with **Show more** when more cards remain.
 
-Card moves currently support **memo-scoped select properties**. FWWIP re-reads the board and memo, checks the source column and current version, then changes only the grouping field using `base_version`. It omits collection overrides and overwrite flags. **Not set** removes the property using versioned `delete_field`. Success requires a matching read-back with unrelated data preserved and a successful board refresh. Uncertain results show **Move not confirmed**; a conflict is not forcibly overwritten.
+Card moves currently support **memo-scoped select properties**. FWWIP re-reads the board and memo, checks the source column and current version, then changes only the grouping field using `base_version`. It omits collection overrides and overwrite flags. **Not set** removes the property using versioned `delete_field`. The card appears in the destination immediately and counts update while the write runs in the background. Writes are serialized per canonical card, with up to three independent cards processed concurrently. Rapid moves remain queued in order for each card. Other cards, columns, workspace/collection navigation and refresh remain interactive. Pending projections and read guards are scoped to the originating workspace and collection so old responses cannot replace newer state. Success requires a matching read-back with unrelated data preserved and a successful board refresh. A failed request removes only its own pending projection, refetches authoritative state and preserves newer queued placements. Queued moves still check their expected source, so a conflict can independently refuse a later move rather than overwrite an external change. Uncertain results show **Move not confirmed**; a conflict is not forcibly overwritten.
 
 Current limits:
 
@@ -55,6 +55,8 @@ Current limits:
 - A grouping-field collection override blocks a move; resolve it in Fieldwerk first.
 - Project reassignment stays in Fieldwerk because home membership must also be reconciled.
 - Non-select grouping properties stay in Fieldwerk. The app does not create columns, change schemas, edit task bodies, alter sharing or reconcile memberships.
+
+The latest verified move in this session can be undone with **Cmd-Z / Edit → Undo Move Card** and redone with **Cmd-Shift-Z / Edit → Redo Move Card**. The exact prior value, including absence or a literal empty string, is retained with memo scope, collection overrides and the confirmed post-write version. Each inverse checks that version and state before writing only the same property. A pending inverse disables only its own Undo/Redo entry until verified; unrelated card operations stay interactive. Failed writes create no durable history, and a new move clears redo immediately. History is in memory and is cleared at sign-out or quit. Collection-scoped writes remain unsupported because they lack version protection.
 
 Collection instructions and status meanings still apply. Moving to Done does not create completion evidence.
 
@@ -86,8 +88,10 @@ Run the core tests on macOS:
 swift test
 ```
 
-The 45 tests cover OAuth validation, PKCE/callback binding, real loopback listener cleanup, read-tool restrictions, canonical links, typed metadata, selection persistence, column grouping/order, pagination, and move validation/conflict/read-back behavior. Loopback tests bind `127.0.0.1:53682`; stop any active sign-in first and allow local loopback access. Tests do not perform real login or read real Keychain credentials.
+The 69 tests cover OAuth validation, PKCE/callback binding, real loopback listener cleanup, read-tool restrictions, canonical links, typed metadata, selection persistence, column grouping/order, pagination, move validation/conflict/read-back behavior, exact-value undo/redo, optimistic counts, rapid moves, rollback, and stale-completion isolation. Loopback tests bind `127.0.0.1:53682`; stop any active sign-in first and allow local loopback access. Tests do not perform real login or read real Keychain credentials.
 
-The signed app build and core suite have passed locally. Native panel/menu behavior and restored sign-in have been inspected. A temporary synthetic memo verified the live API's version conflict behavior and was recoverably archived afterward. **The complete native Move to write round-trip is still pending:** the Mac locked after menu inspection, before selecting a destination. Unit/API verification does not establish that final UI path has passed.
+The signed app build and all 69 core tests have passed locally. Native optimistic Move to, Cmd-Z and Cmd-Shift-Z were observed on a temporary synthetic fixture and confirmed by canonical read-back. An intervening remote version change was refused by native Undo, with a concise error and authoritative refetch. The fixture was restored and recoverably archived. The quiet interface was inspected after relaunch: routine operation messages and inline Undo/Redo controls are absent. Bounded concurrency, rapid intent ordering and workspace/collection read races are covered by automated tests; not every concurrent UI scenario has been exercised manually.
+
+Routine move, saving, undo and redo status is deliberately absent from the visible interface; the card position is the feedback. Concise errors remain visible when a write or authoritative refresh fails.
 
 This repository contains app source and synthetic tests. Private workspace data, development screenshots, logs, credentials and local evidence are excluded. There is no packaged, notarized release yet.

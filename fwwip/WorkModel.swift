@@ -12,6 +12,12 @@ nonisolated struct WorkItem: Identifiable, Equatable, Sendable {
     let conversationURL: URL?
     var verifiedAt: Date? = nil
     var evidenceURL: URL? = nil
+
+    func inColumn(field: String, value: String) -> Self {
+        WorkItem(id: id, title: title, project: project, state: field == "status" ? value : state,
+                 update: update, attention: attention, taskURL: taskURL, conversationURL: conversationURL,
+                 verifiedAt: verifiedAt, evidenceURL: evidenceURL)
+    }
 }
 
 nonisolated struct MeaningfulUpdate: Equatable, Sendable {

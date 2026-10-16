@@ -117,6 +117,7 @@ final class FieldwerkReader: BoardMoveAccess {
     private var sessionID: String?
     private var nextID = 0
     private var initialized = false
+    private let tokenGate = AccessTokenGate()
     init(session: FieldwerkSession, transport: any HTTPTransport = FieldwerkHTTP()) {
         self.session = session; self.transport = transport
     }
@@ -186,11 +187,11 @@ final class FieldwerkReader: BoardMoveAccess {
     func moveMemo(id: String) async throws -> MoveMemo {
         try JSONDecoder().decode(MoveMemo.self, from: await call("get_memo", arguments: ["id": id]))
     }
-    func setMoveField(id: String, field: String, destination: String, version: Int) async throws {
+    func setMoveField(id: String, field: String, value: String?, version: Int) async throws {
         var arguments: [String: Any] = ["id": id, "field": field, "base_version": version]
         let tool: String
-        if destination.isEmpty { tool = "delete_field" }
-        else { tool = "set_field"; arguments["value"] = destination; arguments["value_is_literal_string"] = true }
+        if let value { tool = "set_field"; arguments["value"] = value; arguments["value_is_literal_string"] = true }
+        else { tool = "delete_field" }
         // Narrow, explicit mutation boundary. Generic call() remains read-only.
         try await initialize()
         let result = try await rpc(method: "tools/call", params: ["name": tool, "arguments": arguments])
@@ -224,7 +225,7 @@ final class FieldwerkReader: BoardMoveAccess {
         var reply = try await transport.send(request(body: body), rpcID: id)
         if reply.status == 401 {
             // A 401 rejected authentication before execution; retry once with the same version.
-            _ = try await session.accessToken(forceRefresh: true)
+            _ = try await tokenGate.value(forceRefresh: true) { [session] force in try await session.accessToken(forceRefresh: force) }
             reply = try await transport.send(request(body: body), rpcID: id)
         }
         if let id = reply.headers["mcp-session-id"] {
@@ -239,10 +240,29 @@ final class FieldwerkReader: BoardMoveAccess {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
-        request.setValue("Bearer \(try await session.accessToken())", forHTTPHeaderField: "Authorization")
+        let token = try await tokenGate.value { [session] force in try await session.accessToken(forceRefresh: force) }
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("2025-03-26", forHTTPHeaderField: "MCP-Protocol-Version")
         if let sessionID { request.setValue(sessionID, forHTTPHeaderField: "Mcp-Session-Id") }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         return request
+    }
+}
+
+/// Concurrent card requests share a token refresh instead of racing refresh-token rotation.
+@MainActor final class AccessTokenGate {
+    private var pending: (id: UUID, force: Bool, task: Task<String, Error>)?
+    func value(forceRefresh: Bool = false,
+               fetch: @escaping @MainActor (Bool) async throws -> String) async throws -> String {
+        if let pending {
+            if !forceRefresh || pending.force { return try await pending.task.value }
+            _ = try await pending.task.value
+        }
+        // Another forced caller may already have started while the first task was awaited.
+        if let pending, pending.force { return try await pending.task.value }
+        let id = UUID(), task = Task { try await fetch(forceRefresh) }
+        pending = (id, forceRefresh, task)
+        defer { if pending?.id == id { pending = nil } }
+        return try await task.value
     }
 }
