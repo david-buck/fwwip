@@ -32,7 +32,7 @@ final class BoardTests: XCTestCase {
     }
     func testColumnScopeUsesItsOwnLayerAndMemoScopeUsesCanonicalLayer() throws {
         var row = try card("a", status: "Edge", edge: "Edge")
-        try row.useCanonicalMetadata(Data("{\"fields\":{\"status\":\"Own\"}}".utf8))
+        try row.useCanonicalFields(Data("{\"fields\":{\"status\":\"Own\"}}".utf8))
         let memo = try BoardSnapshot(definition: definition(order: ["Own", "Edge"]), cards: [row])
         let collection = try BoardSnapshot(definition: definition(order: ["Own", "Edge"], scope: "collection"), cards: [row])
         XCTAssertEqual(memo.itemsByColumn["Own"]?.map(\.id), ["a"])

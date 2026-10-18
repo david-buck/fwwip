@@ -16,10 +16,10 @@ struct FWWIPApp: App {
         }
         .commands {
             CommandGroup(replacing: .undoRedo) {
-                Button("Undo Move Card") { appDelegate.undoMove() }
+                Button(appDelegate.undoTitle) { appDelegate.undoMove() }
                     .keyboardShortcut("z", modifiers: .command)
                     .disabled(!appDelegate.canUndoMove)
-                Button("Redo Move Card") { appDelegate.redoMove() }
+                Button(appDelegate.redoTitle) { appDelegate.redoMove() }
                     .keyboardShortcut("z", modifiers: [.command, .shift])
                     .disabled(!appDelegate.canRedoMove)
             }
@@ -43,12 +43,16 @@ final class WorkPanel: NSPanel {
 
 @MainActor
 @Observable
-final class PanelAppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate {
+final class PanelAppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate, NSMenuDelegate {
     @ObservationIgnored private var panel: WorkPanel?
     @ObservationIgnored private var statusItem: NSStatusItem?
+    @ObservationIgnored private var connectionDetailsMenu: NSMenu?
+    @ObservationIgnored private var rememberSignInOnDevice = true
     @ObservationIgnored private let model = PanelModel()
     var canUndoMove: Bool { model.canUndoMove }
     var canRedoMove: Bool { model.canRedoMove }
+    var undoTitle: String { model.undoTitle }
+    var redoTitle: String { model.redoTitle }
     func undoMove() { model.undoMove() }
     func redoMove() { model.redoMove() }
     var staysOnTop = true {
@@ -92,6 +96,12 @@ final class PanelAppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate
         let show = NSMenuItem(title: "Show FWWIP", action: #selector(showPanel), keyEquivalent: "")
         show.target = self
         menu.addItem(show)
+        let detailsItem = NSMenuItem(title: "Connection details", action: nil, keyEquivalent: "")
+        let detailsMenu = NSMenu()
+        detailsMenu.delegate = self
+        detailsItem.submenu = detailsMenu
+        menu.addItem(detailsItem)
+        connectionDetailsMenu = detailsMenu
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit FWWIP", action: #selector(quitApp), keyEquivalent: "q")
         quit.target = self
@@ -108,6 +118,78 @@ final class PanelAppDelegate: NSObject, NSApplicationDelegate, NSToolbarDelegate
 
     @objc private func quitApp() { NSApp.terminate(nil) }
 
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard let connectionDetailsMenu, menu === connectionDetailsMenu else { return }
+        menu.removeAllItems()
+        addConnectionDetail(model.isConnected ? "Status: Connected" : "Status: Not connected", to: menu)
+        let lastSynced = model.lastFetchedAt?.formatted(date: .abbreviated, time: .shortened) ?? "Never"
+        addConnectionDetail("Last synced: \(lastSynced)", to: menu)
+        menu.addItem(.separator())
+        addConnectionDetail("Access: Read and write (memos:rw)", to: menu)
+        addConnectionDetail("Callback: http://127.0.0.1:53682/oauth/callback", to: menu)
+        addConnectionDetail("Your browser handles credentials and consent", to: menu)
+        addConnectionDetail("Tokens use device-only Keychain or memory until quit; no iCloud sync", to: menu)
+
+        menu.addItem(.separator())
+        if model.isConnected {
+            addAction("Sign out and change Fieldwerk connection…", to: menu,
+                      selector: #selector(changeConnection), enabled: !model.isBusy && !model.isWriting)
+        } else if model.isBusy {
+            addConnectionDetail(model.serviceMessage, to: menu)
+            addAction("Cancel sign-in", to: menu, selector: #selector(cancelConnection))
+        } else if model.approvalReady {
+            addConnectionDetail("FWWIP reads work and moves cards only when you choose a destination.", to: menu)
+            addAction("Remember sign-in on this Mac", to: menu, selector: #selector(toggleRememberOnDevice),
+                      checked: rememberSignInOnDevice)
+            addConnectionDetail(rememberSignInOnDevice
+                                ? "Saved in FWWIP’s device-only Keychain item."
+                                : "Kept in memory until FWWIP quits.", to: menu)
+            addConnectionDetail("Review the access request, then approve it in your browser.", to: menu)
+            addAction("Open browser to approve", to: menu, selector: #selector(approveConnection))
+        } else {
+            addAction("Connect to Fieldwerk…", to: menu, selector: #selector(prepareConnection))
+        }
+
+        if !model.isConnected && model.canRemoveSavedSignIn {
+            addAction("Remove saved sign-in", to: menu, selector: #selector(removeSavedSignIn),
+                      enabled: !model.isBusy && !model.isWriting)
+        }
+        addAction("Connection guide", to: menu, selector: #selector(openConnectionGuide))
+
+        if let error = model.errorMessage {
+            menu.addItem(.separator())
+            addConnectionDetail("Issue: \(error)", to: menu)
+        }
+        if let failure = model.backgroundFailureMessage {
+            if model.errorMessage == nil { menu.addItem(.separator()) }
+            addConnectionDetail("Background issue: \(failure)", to: menu)
+        }
+    }
+
+    private func addConnectionDetail(_ title: String, to menu: NSMenu) {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        menu.addItem(item)
+    }
+
+    private func addAction(_ title: String, to menu: NSMenu, selector: Selector,
+                           enabled: Bool = true, checked: Bool? = nil) {
+        let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+        item.target = self
+        item.isEnabled = enabled
+        if let checked { item.state = checked ? .on : .off }
+        menu.addItem(item)
+    }
+
+    @objc private func prepareConnection() { Task { await model.prepareSignIn() } }
+    @objc private func approveConnection() { model.approveAndSignIn(rememberOnDevice: rememberSignInOnDevice) }
+    @objc private func toggleRememberOnDevice() { rememberSignInOnDevice.toggle() }
+    @objc private func cancelConnection() { model.cancelSignIn() }
+    @objc private func changeConnection() { Task { await model.logout() } }
+    @objc private func removeSavedSignIn() { Task { await model.logout() } }
+    @objc private func openConnectionGuide() {
+        NSWorkspace.shared.open(URL(string: "https://fieldwerk.ai/connect")!)
+    }
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.flexibleSpace, .init("FWWIPPanelActions")]
     }

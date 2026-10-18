@@ -1,0 +1,51 @@
+{
+  "features" : [
+    "refractivity"
+  ],
+  "fill" : {
+    "linear-gradient" : [
+      "display-p3:0.59608,0.70980,1.00000,1.00000",
+      "display-p3:0.50317,0.54289,0.85937,1.00000"
+    ]
+  },
+  "groups" : [
+    {
+      "blur-material" : null,
+      "layers" : [
+        {
+          "fill" : {
+            "solid" : "display-p3:1.00000,1.00000,1.00000,0.77000"
+          },
+          "image-name" : "fwwip.svg",
+          "name" : "fwwip",
+          "position" : {
+            "scale" : 40.18,
+            "translation-in-points" : [
+              15,
+              -62
+            ]
+          }
+        }
+      ],
+      "refractivity" : {
+        "depth" : 0.4849609375,
+        "enabled" : true,
+        "strength" : -0.0264453125
+      },
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.3
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}

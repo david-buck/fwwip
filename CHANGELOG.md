@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Remove the custom WIP metadata reader and Needs you filter. Existing Fieldwerk card fields are left untouched.
+- Keep workspace and collection selectors and Last synced in the main panel; put connection diagnostics and service-connection controls under the menu-bar Connection details submenu. Remove the Details control from the panel while keeping useful errors visible. Rename Fetched to Last synced.
+- Use the supplied AppIconFW Icon Composer package as the app’s main icon.
+- Use full-width native workspace and collection pop-up controls without visible field labels.
+- Enable Hardened Runtime for Debug and Release, and set the macOS Productivity app category. Verify a signed universal Release archive without adding runtime entitlement exceptions.
+- Add **Trash** after a separator in Move to, using Fieldwerk’s recoverable claimed-owner trash operation.
+- Reuse optimistic removal, per-card serialization, concise failure feedback and native Undo/Redo for restore/re-trash. Preserve canonical fields, memberships, sharing and archive state.
+- Refuse unclaimed/unowned cards and repeat deletion of already-trashed cards; never automatically replay trash/restore requests. The backend provides preflight/read-back protection rather than an atomic `base_version` condition for these operations.
+- Add synthetic success, rejection, rollback, restore, redo, ownership and queued-removal coverage. No multi-selection UI or permanent-delete action is added.
+
 ## 2026-10-16
 
 - Move cards optimistically: update their column and counts immediately, then verify the canonical Fieldwerk write in the background.

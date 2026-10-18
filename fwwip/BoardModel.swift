@@ -92,12 +92,14 @@ nonisolated struct BoardSnapshot: Equatable, Sendable {
 
     func applying(_ placements: [PendingPlacement]) -> Self {
         var result = self
-        for placement in placements where placement.field == definition.group_by {
+        for placement in placements where placement.removesCard || placement.field == definition.group_by {
             for key in result.itemsByColumn.keys {
                 result.itemsByColumn[key]?.removeAll { $0.id == placement.item.id }
             }
-            result.itemsByColumn[placement.destination, default: []].insert(
-                placement.item.inColumn(field: placement.field, value: placement.destination), at: 0)
+            if !placement.removesCard {
+                result.itemsByColumn[placement.destination, default: []].insert(
+                    placement.item.inColumn(field: placement.field, value: placement.destination), at: 0)
+            }
         }
         return result
     }
@@ -110,6 +112,7 @@ nonisolated struct PendingPlacement: Identifiable {
     let field: String
     let source: String
     let destination: String
+    var removesCard = false
 }
 
 nonisolated struct BoardContext: Hashable {

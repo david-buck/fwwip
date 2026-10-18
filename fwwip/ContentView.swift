@@ -1,79 +1,64 @@
 import SwiftUI
+import AppKit
 
 struct ContentView: View {
     let model: PanelModel
-    @State private var showConnection = false
 
     var body: some View {
         VStack(spacing: 0) {
             if model.isConnected {
-                WorkspaceHeader(model: model, showConnection: { showConnection = true })
-                WorkList(model: model).id("\(model.selectedColumnID ?? "none")/\(model.filter.rawValue)")
+                WorkspaceHeader(model: model)
+                WorkList(model: model).id(model.selectedColumnID ?? "none")
             } else {
-                DisconnectedView(isBusy: model.isBusy, error: model.errorMessage,
-                                 showConnection: { showConnection = true })
+                DisconnectedView(isBusy: model.isBusy, serviceMessage: model.serviceMessage,
+                                 error: model.errorMessage)
             }
         }
         .frame(minWidth: 400, idealWidth: 440, maxWidth: 560, minHeight: 420, idealHeight: 660)
         .background(.regularMaterial)
         .task { await model.restore() }
-        .sheet(isPresented: $showConnection) {
-            ConnectionView(model: model, dismiss: { showConnection = false })
-        }
     }
 }
 
 private struct WorkspaceHeader: View {
     let model: PanelModel
-    let showConnection: () -> Void
 
     var body: some View {
         VStack(spacing: 12) {
-            Picker("Workspace", selection: Binding(
-                get: { model.selectedWorkspaceID },
-                set: { id in Task { await model.chooseWorkspace(id) } }
-            )) {
-                if model.workspaces.isEmpty { Text("No workspaces").tag(String?.none) }
-                ForEach(model.workspaces) { workspace in
-                    Text(workspace.name).tag(Optional(workspace.id))
-                }
-            }
-            .labelsHidden()
-            .buttonSizing(.flexible)
-            .frame(maxWidth: .infinity)
-            .disabled(model.isBusy)
+            VStack(alignment: .leading, spacing: 4) {
+                FullWidthPopUpSelector(
+                    accessibilityLabel: "Workspace",
+                    selectedTitle: model.workspaces.first { $0.id == model.selectedWorkspaceID }?.name ??
+                        (model.workspaces.isEmpty ? "No workspaces" : "Select workspace"),
+                    selectedID: model.selectedWorkspaceID,
+                    options: model.workspaces.map { .init(id: $0.id, title: $0.name) },
+                    emptyTitle: "No workspaces",
+                    isDisabled: model.isBusy || model.isWriting,
+                    choose: { id in Task { await model.chooseWorkspace(id) } }
+                )
 
-            Picker("Collection", selection: Binding(
-                get: { model.selectedCollectionID },
-                set: { id in Task { await model.chooseCollection(id) } }
-            )) {
-                if model.collections.isEmpty { Text("No collections").tag(String?.none) }
-                ForEach(model.collections) { collection in
-                    Text(collection.name).tag(Optional(collection.id))
-                }
+                FullWidthPopUpSelector(
+                    accessibilityLabel: "Collection",
+                    selectedTitle: model.collections.first { $0.id == model.selectedCollectionID }?.name ??
+                        (model.collections.isEmpty ? "No collections" : "Select collection"),
+                    selectedID: model.selectedCollectionID,
+                    options: model.collections.map { .init(id: $0.id, title: $0.name) },
+                    emptyTitle: "No collections",
+                    isDisabled: model.isBusy || model.isWriting,
+                    choose: { id in Task { await model.chooseCollection(id) } }
+                )
             }
-            .labelsHidden()
-            .buttonSizing(.flexible)
-            .frame(maxWidth: .infinity)
-            .disabled(model.isBusy)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             ColumnNavigation(model: model)
             HStack(alignment: .firstTextBaseline) {
-                if let fetchedAt = model.lastFetchedAt {
-                    Text("Fetched \(fetchedAt, format: .dateTime.hour().minute())")
+                if let lastSyncedAt = model.lastFetchedAt {
+                    Text("Last synced \(lastSyncedAt, format: .dateTime.hour().minute())")
                         .foregroundStyle(.secondary)
                 } else if model.isBusy || model.isLoadingWork {
                     Text("Loading work…").foregroundStyle(.secondary)
                 }
                 Spacer()
-                Toggle("Needs you (\(model.actionCount))", isOn: Binding(
-                    get: { model.filter == .needsYou },
-                    set: { model.filter = $0 ? .needsYou : .all }
-                ))
-                .toggleStyle(.button)
-                .disabled(model.snapshot == nil)
-                .help("Show confirmed requests in this column")
-                Button("Details", action: showConnection).buttonStyle(.link)
             }
             .font(.caption)
             if let failure = model.backgroundFailureMessage {
@@ -87,6 +72,102 @@ private struct WorkspaceHeader: View {
             }
         }
         .padding(16)
+    }
+}
+
+private struct FullWidthPopUpSelector: NSViewRepresentable {
+    struct Option: Identifiable {
+        let id: String
+        let title: String
+    }
+
+    let accessibilityLabel: String
+    let selectedTitle: String
+    let selectedID: String?
+    let options: [Option]
+    let emptyTitle: String
+    let isDisabled: Bool
+    let choose: (String) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(choose: choose)
+    }
+
+    func makeNSView(context: Context) -> PopUpButtonContainer {
+        let container = PopUpButtonContainer()
+        let button = container.button
+        button.controlSize = .regular
+        button.setAccessibilityLabel(accessibilityLabel)
+        button.target = context.coordinator
+        button.action = #selector(Coordinator.selectItem(_:))
+        return container
+    }
+
+    func updateNSView(_ container: PopUpButtonContainer, context: Context) {
+        let button = container.button
+        context.coordinator.choose = choose
+        button.removeAllItems()
+        if options.isEmpty {
+            button.addItem(withTitle: emptyTitle)
+            button.lastItem?.isEnabled = false
+        } else {
+            for option in options {
+                button.addItem(withTitle: option.title)
+                button.lastItem?.representedObject = option.id
+            }
+            if let selectedID, let index = options.firstIndex(where: { $0.id == selectedID }) {
+                button.selectItem(at: index)
+            } else {
+                button.selectItem(at: 0)
+            }
+        }
+        button.isEnabled = !isDisabled && !options.isEmpty
+        button.setAccessibilityLabel(accessibilityLabel)
+        button.setAccessibilityValue(selectedTitle)
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: PopUpButtonContainer, context: Context) -> CGSize? {
+        let intrinsicSize = nsView.button.intrinsicContentSize
+        let proposedWidth = proposal.width.flatMap { $0.isFinite ? $0 : nil }
+        return CGSize(width: proposedWidth ?? intrinsicSize.width, height: intrinsicSize.height)
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        var choose: (String) -> Void
+
+        init(choose: @escaping (String) -> Void) {
+            self.choose = choose
+        }
+
+        @objc func selectItem(_ sender: NSPopUpButton) {
+            guard let id = sender.selectedItem?.representedObject as? String else { return }
+            choose(id)
+        }
+    }
+}
+
+private final class PopUpButtonContainer: NSView {
+    let button = NSPopUpButton(frame: .zero, pullsDown: false)
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(button)
+        NSLayoutConstraint.activate([
+            button.leadingAnchor.constraint(equalTo: leadingAnchor),
+            button.trailingAnchor.constraint(equalTo: trailingAnchor),
+            button.topAnchor.constraint(equalTo: topAnchor),
+            button.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var intrinsicContentSize: NSSize {
+        button.intrinsicContentSize
     }
 }
 
@@ -130,12 +211,12 @@ private struct WorkList: View {
                 ForEach(model.items) { item in
                     WorkCard(item: item, destinations: model.columns.filter { $0.id != model.selectedColumnID },
                              moveLimitation: model.moveLimitation, isBusy: model.isBusy,
-                             move: { destination in Task { await model.move(item, to: destination) } })
+                             move: { destination in Task { await model.move(item, to: destination) } },
+                             trash: { model.trash(item) })
                 }
                 if model.items.isEmpty && !model.isBusy {
                     VStack(alignment: .leading, spacing: 12) {
                         Text(model.isLoadingWork ? "Loading work…" : model.snapshot == nil ? "No work loaded."
-                             : model.filter == .needsYou ? "No confirmed requests for you in this column."
                              : "No cards in this column.")
                             .font(.callout).foregroundStyle(.secondary)
                         if model.snapshot == nil, let url = model.boardURL { Link("Open in Fieldwerk", destination: url) }
@@ -156,18 +237,20 @@ private struct WorkList: View {
 
 private struct DisconnectedView: View {
     let isBusy: Bool
+    let serviceMessage: String
     let error: String?
-    let showConnection: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Connect to Fieldwerk").font(.title2).fontWeight(.semibold)
-            Text("Open your browser to approve FWWIP and see your current work.")
+            Text("Use Connection details in the FWWIP menu bar menu to connect or change connections.")
                 .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if let error { Text(error).font(.callout).fixedSize(horizontal: false, vertical: true) }
-            if isBusy { ProgressView().controlSize(.small) }
-            Button("Connect to Fieldwerk", action: showConnection)
-                .buttonStyle(.borderedProminent).disabled(isBusy)
+            if isBusy {
+                ProgressView().controlSize(.small)
+                Text(serviceMessage).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(30)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -180,6 +263,7 @@ private struct WorkCard: View {
     let moveLimitation: String?
     let isBusy: Bool
     let move: (String) -> Void
+    let trash: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -191,28 +275,13 @@ private struct WorkCard: View {
                 }
                 Text(item.title).font(.headline).fixedSize(horizontal: false, vertical: true)
             }
-            if let update = item.update {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(update.text).font(.callout).fixedSize(horizontal: false, vertical: true)
-                    Text(update.occurredAt, format: .dateTime.month(.abbreviated).day().hour().minute())
-                        .font(.caption).foregroundStyle(.secondary)
-                        .help(update.source)
-                }
-            } else {
-                Text("Progress update not recorded.").font(.caption).foregroundStyle(.secondary)
-            }
-            AttentionView(attention: item.attention)
-            if let verifiedAt = item.verifiedAt {
-                Text("Verified \(verifiedAt, format: .dateTime.month(.abbreviated).day().hour().minute())")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
             HStack(spacing: 16) {
-                SourceLink(title: "Task", icon: "arrow.up.right", url: item.taskURL)
-                if let evidenceURL = item.evidenceURL {
-                    SourceLink(title: "Evidence", icon: "checkmark.seal", url: evidenceURL)
-                }
-                if let conversationURL = item.conversationURL {
-                    SourceLink(title: "Conversation", icon: "bubble.left", url: conversationURL)
+                if let taskURL = item.taskURL {
+                    Link(destination: taskURL) { Label("Task", systemImage: "arrow.up.right") }
+                } else {
+                    Label("Task", systemImage: "arrow.up.right")
+                        .foregroundStyle(.tertiary)
+                        .help("No canonical task link is available.")
                 }
                 Spacer(minLength: 0)
                 Menu("Move to") {
@@ -222,6 +291,8 @@ private struct WorkCard: View {
                             Button(column.label) { move(column.id) }
                         }
                     }
+                    Divider()
+                    Button("Trash", role: .destructive, action: trash)
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
@@ -232,114 +303,6 @@ private struct WorkCard: View {
         .padding(16)
         .background(.background.opacity(0.8), in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator.opacity(0.5)))
-    }
-}
-
-private struct AttentionView: View {
-    let attention: Attention
-
-    var body: some View {
-        switch attention {
-        case .needsYou(let reason):
-            VStack(alignment: .leading, spacing: 4) {
-                Label("Needs you", systemImage: "hand.raised.fill").fontWeight(.semibold)
-                Text(reason)
-            }
-            .font(.caption).fixedSize(horizontal: false, vertical: true)
-            .padding(10).frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary.opacity(0.8), in: RoundedRectangle(cornerRadius: 7))
-        case .noAction(let reason):
-            Label("No action needed: \(reason)", systemImage: "checkmark.circle")
-                .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        case .unknown:
-            Text("Action status not recorded.").font(.caption).foregroundStyle(.secondary)
-        }
-    }
-}
-
-private struct SourceLink: View {
-    let title: LocalizedStringResource
-    let icon: String
-    let url: URL?
-
-    var body: some View {
-        if let url {
-            Link(destination: url) { Label { Text(title) } icon: { Image(systemName: icon) } }
-        } else {
-            Label { Text(title) } icon: { Image(systemName: icon) }
-                .foregroundStyle(.tertiary)
-                .help("No verified link is recorded.")
-        }
-    }
-}
-
-private struct ConnectionView: View {
-    let model: PanelModel
-    let dismiss: () -> Void
-    @State private var rememberOnDevice = true
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(model.isConnected ? "Fieldwerk connection" : "Connect to Fieldwerk")
-                .font(.title2).fontWeight(.semibold)
-            if model.isConnected {
-                Text("Signed in to Fieldwerk.").foregroundStyle(.secondary)
-                if let error = model.errorMessage { Text(error).font(.callout) }
-                Button("Sign out and remove saved tokens") { Task { await model.logout() } }
-                    .disabled(model.isBusy)
-            } else {
-                Text("Approve FWWIP in your browser.").foregroundStyle(.secondary)
-                if let error = model.errorMessage { Text(error).font(.callout) }
-                if model.approvalReady {
-                    SignInApprovalDetails(rememberOnDevice: $rememberOnDevice)
-                    Button("Open browser") { model.approveAndSignIn(rememberOnDevice: rememberOnDevice) }
-                        .buttonStyle(.borderedProminent).disabled(model.isBusy)
-                } else if !model.isBusy {
-                    Button("Prepare connection") { Task { await model.prepareSignIn() } }
-                }
-                if model.canRemoveSavedSignIn {
-                    Button("Remove saved sign-in") { Task { await model.logout() } }.disabled(model.isBusy)
-                }
-            }
-            if model.isBusy {
-                ProgressView().controlSize(.small)
-                if !model.isConnected {
-                    Text(model.serviceMessage).font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Button("Cancel sign-in") { model.cancelSignIn() }
-                }
-            }
-            HStack {
-                Link("Connection guide", destination: URL(string: "https://fieldwerk.ai/connect")!)
-                Spacer()
-                Button("Done", action: dismiss).keyboardShortcut(.defaultAction)
-            }.font(.caption)
-        }
-        .padding(26).frame(width: 400)
-        .task {
-            if !model.isConnected && !model.approvalReady { await model.prepareSignIn() }
-        }
-    }
-}
-
-private struct SignInApprovalDetails: View {
-    @Binding var rememberOnDevice: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Fieldwerk grants read and write access. FWWIP reads your work and moves cards when you choose a destination.")
-            Toggle("Remember sign-in on this Mac", isOn: $rememberOnDevice)
-            Text(rememberOnDevice ? "Saved in FWWIP’s device-only Keychain item." : "Kept in memory until FWWIP quits.")
-                .foregroundStyle(.secondary)
-            DisclosureGroup("Connection details") {
-                Text("Public client: FWWIP. Scope: memos:rw; Fieldwerk advertises no read-only scope. Callback: http://127.0.0.1:53682/oauth/callback. Your browser handles credentials and consent. No iCloud token sync.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 6)
-            }
-        }
-        .font(.callout)
     }
 }
 

@@ -58,7 +58,9 @@ nonisolated struct VerifiedMove {
     private(set) var isAvailable = false
     private(set) var canUndo = false
     private(set) var canRedo = false
+    private(set) var actionName = "Move Card"
     @ObservationIgnored private var entry: MoveHistoryEntry?
+    @ObservationIgnored private var trashEntry: TrashHistoryEntry?
     init() { manager.groupsByEvent = false; manager.levelsOfUndo = 1 }
 
     func move(id: String, item: WorkItem, source: String, destination: String, collection: String,
@@ -95,12 +97,38 @@ nonisolated struct VerifiedMove {
         updateAvailability()
     }
     func fail(_ entry: MoveHistoryEntry) { if self.entry === entry { clear() } }
+    func recordTrash(_ receipt: VerifiedTrash, item: WorkItem, field: String, column: String,
+                     onRequest: @escaping @MainActor (TrashHistoryEntry, Bool) -> Void) {
+        clear(); actionName = "Trash Card"
+        let entry = TrashHistoryEntry(receipt: receipt, item: item, field: field, column: column)
+        trashEntry = entry
+        manager.beginUndoGrouping()
+        registerTrash(entry, undo: true, onRequest: onRequest)
+        manager.endUndoGrouping(); updateAvailability()
+    }
+    private func registerTrash(_ entry: TrashHistoryEntry, undo: Bool,
+                               onRequest: @escaping @MainActor (TrashHistoryEntry, Bool) -> Void) {
+        manager.registerUndo(withTarget: self) { history in
+            history.isAvailable = false; history.canUndo = false; history.canRedo = false
+            history.registerTrash(entry, undo: !undo, onRequest: onRequest)
+            onRequest(entry, undo)
+        }
+        manager.setActionName("Trash Card")
+    }
+    func completeTrash(_ entry: TrashHistoryEntry, receipt: VerifiedTrash) {
+        guard trashEntry === entry else { return }
+        entry.receipt = receipt; updateAvailability()
+    }
+    func failTrash(_ entry: TrashHistoryEntry) { if trashEntry === entry { clear() } }
     private func updateAvailability() {
         canUndo = manager.canUndo; canRedo = manager.canRedo; isAvailable = canUndo || canRedo
     }
     func undo() { guard canUndo else { return }; manager.undo() }
     func redo() { guard canRedo else { return }; manager.redo() }
-    func clear() { manager.removeAllActions(); entry = nil; isAvailable = false; canUndo = false; canRedo = false }
+    func clear() {
+        manager.removeAllActions(); entry = nil; trashEntry = nil; actionName = "Move Card"
+        isAvailable = false; canUndo = false; canRedo = false
+    }
 }
 
 nonisolated enum BoardMove {

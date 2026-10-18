@@ -4,7 +4,6 @@ import Observation
 
 @MainActor @Observable
 final class PanelModel {
-    var filter: WorkFilter = .all { didSet { visibleCount = WorkSlice.size } }
     var selectedWorkspaceID: String? {
         didSet {
             if let selectedWorkspaceID { preferences.set(selectedWorkspaceID, forKey: Self.workspaceKey) }
@@ -36,7 +35,10 @@ final class PanelModel {
     private var contextErrorRevisions: [BoardContext: Int] = [:]
     private var contextIntents: [BoardContext: Int] = [:]
     private var readGeneration = 0
-    private enum MutationKind { case move(BoardSnapshot), inverse(MoveHistoryEntry, Bool) }
+    private enum MutationKind {
+        case move(BoardSnapshot), inverse(MoveHistoryEntry, Bool)
+        case trash(BoardDefinition), trashInverse(TrashHistoryEntry, Bool)
+    }
     private struct Mutation { let placement: PendingPlacement; let context: BoardContext; let kind: MutationKind }
     private var mutations: [UUID: Mutation] = [:]
     private var writeSchedule = CardWriteSchedule()
@@ -65,13 +67,10 @@ final class PanelModel {
     var boardName: String { snapshot?.definition.name ?? "Columns" }
     var columnLabel: String { columns.first(where: { $0.id == selectedColumnID })?.label ?? "No columns" }
     private var columnItems: [WorkItem] { selectedColumnID.flatMap { snapshot?.itemsByColumn[$0] } ?? [] }
-    private var filteredItems: [WorkItem] { filter.apply(to: columnItems) }
-    var items: [WorkItem] { WorkSlice(items: filteredItems, visibleCount: visibleCount).items }
-    var remainingCount: Int { WorkSlice(items: filteredItems, visibleCount: visibleCount).remainingCount }
+    var items: [WorkItem] { WorkSlice(items: columnItems, visibleCount: visibleCount).items }
+    var remainingCount: Int { WorkSlice(items: columnItems, visibleCount: visibleCount).remainingCount }
     var columnCount: Int { columnItems.count }
-    var filteredCount: Int { filteredItems.count }
     var liveItems: [WorkItem] { columns.flatMap { snapshot?.itemsByColumn[$0.id] ?? [] } }
-    var actionCount: Int { columnItems.filter { $0.attention.needsYou }.count }
     var canRemoveSavedSignIn: Bool { isConnected || UserDefaults.standard.bool(forKey: OAuthPolicy.persistenceFlag) }
     private var selectionKey: String? {
         guard let workspace = selectedWorkspaceID, let collection = selectedCollectionID, let board = snapshot?.definition.id else { return nil }
@@ -105,7 +104,7 @@ final class PanelModel {
             defer { self.isBusy = false; self.loginTask = nil }
             do {
                 try await self.session.signInAfterApproval(rememberOnDevice: rememberOnDevice)
-                self.isConnected = true; self.filter = .all; self.reader.reset()
+                self.isConnected = true; self.reader.reset()
                 self.serviceMessage = "Signed in. Loading workspaces…"
                 try await self.loadWork()
             } catch { self.recordReadFailure(error) }
@@ -148,6 +147,8 @@ final class PanelModel {
     var canRedoMove: Bool { isConnected && !isBusy && moveHistory.canRedo }
     func undoMove() { guard canUndoMove else { return }; moveHistory.undo() }
     func redoMove() { guard canRedoMove else { return }; moveHistory.redo() }
+    var undoTitle: String { "Undo \(moveHistory.actionName)" }
+    var redoTitle: String { "Redo \(moveHistory.actionName)" }
 
     private func enqueueInverse(_ entry: MoveHistoryEntry, undo: Bool, context: BoardContext) {
         let receipt = entry.receipt
@@ -155,6 +156,18 @@ final class PanelModel {
                 source: (undo ? receipt.writtenValue : receipt.previousValue) ?? "",
                 destination: (undo ? receipt.previousValue : receipt.writtenValue) ?? "",
                 context: context, kind: .inverse(entry, undo))
+    }
+    private func enqueueTrashInverse(_ entry: TrashHistoryEntry, undo: Bool, context: BoardContext) {
+        enqueue(item: entry.item, field: entry.field, source: entry.column, destination: entry.column,
+                context: context, kind: .trashInverse(entry, undo), removesCard: !undo)
+    }
+    func trash(_ item: WorkItem) {
+        guard !isBusy, isConnected, let snapshot, let context = currentContext, let source = selectedColumnID,
+              columnItems.contains(where: { $0.id == item.id }) else { return }
+        moveHistory.clear()
+        enqueue(item: item, field: snapshot.definition.group_by ?? "", source: source, destination: source,
+                context: context, kind: .trash(snapshot.definition), removesCard: true)
+        latestMoveIntent = mutationRevision
     }
     func move(_ item: WorkItem, to destination: String) async {
         guard !isBusy, isConnected, let snapshot, let context = currentContext,
@@ -168,10 +181,10 @@ final class PanelModel {
         latestMoveIntent = mutationRevision
     }
     private func enqueue(item: WorkItem, field: String, source: String, destination: String,
-                         context: BoardContext, kind: MutationKind) {
+                         context: BoardContext, kind: MutationKind, removesCard: Bool = false) {
         mutationRevision += 1
         let placement = PendingPlacement(id: UUID(), revision: mutationRevision, item: item,
-                                         field: field, source: source, destination: destination)
+                                         field: field, source: source, destination: destination, removesCard: removesCard)
         mutations[placement.id] = Mutation(placement: placement, context: context, kind: kind)
         writeSchedule.enqueue(.init(id: placement.id, memo: item.id, context: context))
         boardStates[context]?.enqueue(placement)
@@ -213,6 +226,17 @@ final class PanelModel {
                 let confirmed = try await undo ? BoardMove.undo(entry.receipt, access: reader)
                     : BoardMove.redo(entry.receipt, access: reader)
                 moveHistory.complete(entry, confirmed: confirmed)
+            case .trash(let board):
+                let receipt = try await BoardTrash.trash(id: placement.item.id, collection: context.collection, access: reader)
+                if placement.revision == latestMoveIntent {
+                    moveHistory.recordTrash(receipt, item: placement.item, field: placement.field,
+                        column: receipt.column(field: placement.field, scope: board.group_by_scope),
+                        onRequest: { [weak self] entry, undo in self?.enqueueTrashInverse(entry, undo: undo, context: context) })
+                }
+            case .trashInverse(let entry, let undo):
+                let receipt = try await undo ? BoardTrash.undo(entry.receipt, access: reader)
+                    : BoardTrash.redo(entry.receipt, access: reader)
+                moveHistory.completeTrash(entry, receipt: receipt)
             }
             boardStates[context]?.finish(placement.id, succeeded: true)
             readGate.confirmedWrite(.init(workspace: context.workspace, collection: context.collection))
@@ -220,6 +244,8 @@ final class PanelModel {
                 switch mutation.kind {
                 case .move: announce("Moved \(placement.item.title) to \(placement.destination.isEmpty ? "Not set" : placement.destination).")
                 case .inverse(_, let undo): announce(undo ? "Move undone." : "Move redone.")
+                case .trash: announce("Moved \(placement.item.title) to Trash.")
+                case .trashInverse(_, let undo): announce(undo ? "Card restored from Trash." : "Card moved to Trash.")
                 }
             }
             updateVisibleContext(context)
@@ -227,11 +253,14 @@ final class PanelModel {
             catch { setContextFailure(error, context: context, revision: placement.revision, prefix: "Change verified; refresh failed. ") }
         } catch {
             if case .inverse(let entry, _) = mutation.kind { moveHistory.fail(entry) }
+            if case .trashInverse(let entry, _) = mutation.kind { moveHistory.failTrash(entry) }
             boardStates[context]?.finish(placement.id, succeeded: false)
             let prefix: String
             switch mutation.kind {
             case .move: prefix = "Move not confirmed. "
             case .inverse(_, let undo): prefix = undo ? "Undo not confirmed. " : "Redo not confirmed. "
+            case .trash: prefix = "Trash not confirmed. "
+            case .trashInverse(_, let undo): prefix = undo ? "Restore not confirmed. " : "Trash not confirmed. "
             }
             setContextFailure(error, context: context, revision: placement.revision, prefix: prefix)
             // Refetch only this context. Newer optimistic placements remain over that base.

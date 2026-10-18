@@ -100,15 +100,13 @@ final class OAuthTests: XCTestCase {
         XCTAssertThrowsError(try RPCCodec.result(error, id: 1))
         XCTAssertThrowsError(try RPCCodec.toolData(["isError": true, "content": []]))
     }
-    func testLiveProjectionKeepsCanonicalIdentityAndUnknownEvidence() throws {
+    func testLiveProjectionKeepsCanonicalIdentityAndStatus() throws {
         let data = Data(#"{"id":"canonical","title":"Heading fallback","url":"https://my.fieldwerk.ai/m/canonical","updated_at":"2026-10-15T10:00:00Z","fields":{"title":"Authored title","project":"Personal","status":"Doing","sync":"No action","estimate":3,"labels":["x"]}}"#.utf8)
         let item = try JSONDecoder().decode(FieldwerkCard.self, from: data).projected()
         XCTAssertEqual(item.id, "canonical")
         XCTAssertEqual(item.title, "Authored title")
         XCTAssertEqual(item.state, "Doing")
-        XCTAssertNil(item.update)
-        XCTAssertEqual(item.attention, .unknown)
-        XCTAssertNil(item.conversationURL)
+        XCTAssertEqual(item.taskURL?.absoluteString, "https://my.fieldwerk.ai/m/canonical")
         let badLink = String(decoding: data, as: UTF8.self).replacingOccurrences(of: "https://my.fieldwerk.ai/m/canonical", with: "https://evil.example/m/canonical")
         XCTAssertThrowsError(try JSONDecoder().decode(FieldwerkCard.self, from: Data(badLink.utf8)).projected())
     }

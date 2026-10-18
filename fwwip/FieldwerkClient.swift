@@ -49,7 +49,6 @@ nonisolated struct FieldwerkCard: Decodable, Sendable {
     let collectionFields: [String: String]
     private(set) var canonicalFields: [String: String]?
     let archived_at: String?
-    var metadata: WIPMetadata?
 
     private enum CodingKeys: String, CodingKey { case id, title, url, fields, archived_at, collection_fields }
     private struct Key: CodingKey {
@@ -64,7 +63,6 @@ nonisolated struct FieldwerkCard: Decodable, Sendable {
         title = try values.decode(String.self, forKey: .title)
         url = try values.decode(URL.self, forKey: .url)
         archived_at = try values.decodeIfPresent(String.self, forKey: .archived_at)
-        metadata = try? values.decode(WIPMetadata.self, forKey: .fields)
         canonicalFields = nil
         if let nested = try? values.nestedContainer(keyedBy: Key.self, forKey: .collection_fields) {
             collectionFields = nested.allKeys.reduce(into: [:]) { result, key in
@@ -79,23 +77,17 @@ nonisolated struct FieldwerkCard: Decodable, Sendable {
         } else { fields = nil }
     }
 
-    func projected(now: Date = .now) throws -> WorkItem {
+    func projected() throws -> WorkItem {
         guard url.scheme == "https", url.host == "my.fieldwerk.ai", url.path == "/m/\(id)",
               url.user == nil, url.password == nil, url.query == nil, url.fragment == nil else {
             throw OAuthIssue.rejected("invalid_canonical_link")
         }
-        // Only explicit WIP properties supply evidence. Activity/status/sync cannot create an action request.
-        let wip = metadata?.projected(now: now)
         return WorkItem(id: id, title: fields?["title"] ?? title, project: fields?["project"] ?? "Project unverified",
-                        state: fields?["status"] ?? "Status unverified", update: wip?.update, attention: wip?.attention ?? .unknown,
-                        taskURL: url, conversationURL: wip?.conversationURL,
-                        verifiedAt: wip?.verifiedAt, evidenceURL: wip?.evidenceURL)
+                        state: fields?["status"] ?? "Status unverified", taskURL: url)
     }
 
-    mutating func useCanonicalMetadata(_ data: Data) throws {
-        struct CanonicalMetadata: Decodable { let fields: WIPMetadata? }
+    mutating func useCanonicalFields(_ data: Data) throws {
         struct RawFields: Decodable { let fields: [String: BoardValue]? }
-        metadata = try JSONDecoder().decode(CanonicalMetadata.self, from: data).fields
         canonicalFields = try JSONDecoder().decode(RawFields.self, from: data).fields?.compactMapValues(\.string) ?? [:]
     }
     func groupValue(field: String, scope: String?) -> String {
@@ -111,7 +103,7 @@ nonisolated struct FieldwerkCard: Decodable, Sendable {
 
 /// A session-specific Streamable HTTP reader with a hard read-tool allowlist.
 @MainActor
-final class FieldwerkReader: BoardMoveAccess {
+final class FieldwerkReader: BoardMoveAccess, BoardTrashAccess {
     private let session: FieldwerkSession
     private let transport: any HTTPTransport
     private var sessionID: String?
@@ -165,10 +157,10 @@ final class FieldwerkReader: BoardMoveAccess {
             offset += page.count
             if page.count < 1000 { break }
         }
-        for index in cards.indices where cards[index].metadata?.isPresent == true ||
-            (board.group_by_scope == "memo" && cards[index].collectionFields[board.group_by ?? ""] != nil) {
+        for index in cards.indices where
+            board.group_by_scope == "memo" && cards[index].collectionFields[board.group_by ?? ""] != nil {
             let raw = try await call("get_memo", arguments: ["id": cards[index].id])
-            try cards[index].useCanonicalMetadata(raw)
+            try cards[index].useCanonicalFields(raw)
         }
         let options = details.field_definitions.first(where: { $0.field_name == board.group_by })?.options?.map(\.label) ?? []
         // The verified web BoardView retains endpoint row order and groupRowsByColumn is stable.
@@ -186,6 +178,44 @@ final class FieldwerkReader: BoardMoveAccess {
     }
     func moveMemo(id: String) async throws -> MoveMemo {
         try JSONDecoder().decode(MoveMemo.self, from: await call("get_memo", arguments: ["id": id]))
+    }
+    func trashMemo(id: String) async throws -> MoveMemo? {
+        let data = try await call("get_memo", arguments: ["id": id])
+        struct Status: Decodable { let ok: Bool?; let error: String? }
+        if let status = try? JSONDecoder().decode(Status.self, from: data), status.ok == false {
+            if status.error == "not_found" { return nil }
+            throw CardTrashError.rejected
+        }
+        return try JSONDecoder().decode(MoveMemo.self, from: data)
+    }
+    func ownsClaimedMemo(id: String, collection: String) async throws -> Bool {
+        struct Owned: Decodable { struct Memo: Decodable { let id: String }; let memos: [Memo] }
+        var offset = 0
+        var seen = Set<String>()
+        while true {
+            let data = try await call("list_my_memos", arguments: ["collection": collection,
+                "include_archived": true, "limit": 1000, "offset": offset])
+            let page = try JSONDecoder().decode(Owned.self, from: data).memos
+            if page.contains(where: { $0.id == id }) { return true }
+            if page.count < 1000 { return false }
+            let fresh = page.filter { seen.insert($0.id).inserted }
+            guard !fresh.isEmpty else { throw CardTrashError.rejected }
+            offset += page.count
+        }
+    }
+    func sendToTrash(id: String) async throws { try await trashCall("delete_memo", arguments: ["id": id]) }
+    func restoreFromTrash(id: String, keepArchived: Bool) async throws {
+        try await trashCall("restore_memo", arguments: ["id": id, "keep_archived": keepArchived])
+    }
+    private func trashCall(_ tool: String, arguments: [String: Any]) async throws {
+        guard tool == "delete_memo" || tool == "restore_memo" else { throw CardTrashError.rejected }
+        try await initialize()
+        // A repeated delete has different semantics. Never replay an uncertain trash/restore request.
+        let result = try await rpc(method: "tools/call", params: ["name": tool, "arguments": arguments], retryUnauthorized: false)
+        guard result["isError"] as? Bool != true else { throw CardTrashError.rejected }
+        let data = try RPCCodec.toolData(result)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              object["ok"] as? Bool == true else { throw CardTrashError.rejected }
     }
     func setMoveField(id: String, field: String, value: String?, version: Int) async throws {
         var arguments: [String: Any] = ["id": id, "field": field, "base_version": version]
@@ -218,12 +248,12 @@ final class FieldwerkReader: BoardMoveAccess {
         guard (200..<300).contains(reply.status) else { throw OAuthIssue.network(reply.status) }
         initialized = true
     }
-    private func rpc(method: String, params: [String: Any]) async throws -> [String: Any] {
+    private func rpc(method: String, params: [String: Any], retryUnauthorized: Bool = true) async throws -> [String: Any] {
         nextID += 1
         let id = nextID
         let body: [String: Any] = ["jsonrpc": "2.0", "id": id, "method": method, "params": params]
         var reply = try await transport.send(request(body: body), rpcID: id)
-        if reply.status == 401 {
+        if reply.status == 401 && retryUnauthorized {
             // A 401 rejected authentication before execution; retry once with the same version.
             _ = try await tokenGate.value(forceRefresh: true) { [session] force in try await session.accessToken(forceRefresh: force) }
             reply = try await transport.send(request(body: body), rpcID: id)

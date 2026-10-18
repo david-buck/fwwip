@@ -69,4 +69,36 @@ final class OptimisticMoveTests: XCTestCase {
         state.replaceBase(try board(value: "Waiting"))
         XCTAssertEqual(state.rollbackColumn(for: move, selected: "Doing", latestRevision: 1), "Waiting")
     }
+    func testTrashIsRemovalRatherThanANewColumnAndFailureRollsBack() throws {
+        let base = try board(); var state = OptimisticBoardState(); state.replaceBase(base)
+        var removal = try placement(1, from: "Next", to: "Next", in: base); removal.removesCard = true
+        state.enqueue(removal)
+        XCTAssertEqual(state.snapshot?.itemsByColumn["Next"]?.count, 0)
+        XCTAssertEqual(state.snapshot?.columns, base.columns)
+        state.finish(removal.id, succeeded: false)
+        XCTAssertEqual(state.snapshot?.itemsByColumn["Next"]?.count, 1)
+    }
+    func testOlderTrashFailureDoesNotHideNewerRestoreIntent() throws {
+        let base = try board(); var state = OptimisticBoardState(); state.replaceBase(base)
+        var removal = try placement(1, from: "Next", to: "Next", in: base); removal.removesCard = true
+        let restore = try placement(2, from: "Next", to: "Next", in: base)
+        state.enqueue(removal); state.enqueue(restore); state.finish(removal.id, succeeded: false)
+        XCTAssertEqual(state.snapshot?.itemsByColumn["Next"]?.count, 1)
+        XCTAssertEqual(state.pending.map(\.id), [restore.id])
+    }
+    func testIndependentQueuedTrashFailuresDoNotRestoreOtherRemovedCards() throws {
+        let second = WorkItem(id: "second-fixture", title: "Second synthetic card", project: "Example",
+                              state: "Next", taskURL: nil)
+        let seed = PendingPlacement(id: UUID(), revision: 0, item: second, field: "status", source: "Next", destination: "Next")
+        let base = try board().applying([seed]); var state = OptimisticBoardState(); state.replaceBase(base)
+        var first = try placement(1, from: "Next", to: "Next", in: board()); first.removesCard = true
+        let other = PendingPlacement(id: UUID(), revision: 2, item: second, field: "status", source: "Next",
+                                     destination: "Next", removesCard: true)
+        state.enqueue(first); state.enqueue(other)
+        XCTAssertEqual(state.snapshot?.itemsByColumn["Next"]?.count, 0)
+        state.finish(first.id, succeeded: false)
+        XCTAssertEqual(state.snapshot?.itemsByColumn["Next"]?.map(\.id), ["fixture"])
+        state.finish(other.id, succeeded: true)
+        XCTAssertEqual(state.snapshot?.itemsByColumn["Next"]?.map(\.id), ["fixture"])
+    }
 }

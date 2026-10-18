@@ -66,7 +66,7 @@ nonisolated final class FieldwerkHTTP: HTTPTransport {
 }
 
 nonisolated enum RPCCodec {
-    static let readTools: Set<String> = ["list_workspaces", "list_collections", "list_collection_memos", "get_memo", "list_views", "get_collection"]
+    static let readTools: Set<String> = ["list_workspaces", "list_collections", "list_collection_memos", "get_memo", "list_views", "get_collection", "list_my_memos"]
     static func matches(_ data: Data, id: Int) -> Bool {
         struct Identity: Decodable { let id: Int; let jsonrpc: String }
         guard let identity = try? JSONDecoder().decode(Identity.self, from: data) else { return false }
